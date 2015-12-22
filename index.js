@@ -1,5 +1,5 @@
 'use-strict';
 
-checker = require('./checker');
+const checker = require('./checker');
 
 checker.run()

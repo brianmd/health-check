@@ -1,7 +1,16 @@
+export alert_emails=<list of email addresses>
+export frequency=<frequency to check in minutes>
+
 export smtp_username=<username on smtp server>
 export smtp_password=<password on smtp server>
 export smtp_address=<smtp domain name>
 export smtp_port=587
-export alert_emails=<list of email addresses>
-export frequency=<frequency to check in minutes>
+
+export redis_host=localhost
+export redis_port=6379
+export redis_pass='mypassword -- or delete this line if no password'
+
+export papichulo_url='http://localhost/'
+export papichulo_username='me'
+export papichulo_password='mepass'
 

@@ -37,7 +37,7 @@ const observation = {};
 
 
 function run() {
-  co(checker.looper())
+  co(looper())
     .catch(e => {
       log('oh no, it crashed');
       log(e)
