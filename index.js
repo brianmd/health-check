@@ -17,6 +17,8 @@ const redisWrapper = require('co-redis');
 const request = require("co-request");
 const sleep   = require('co-sleep');
 
+const errorMsg = _.prop('error')
+const getErrors = _.compose(_.pickBy((val,key)=>val), _.mapObjIndexed(errorMsg))
 const log  = (x)      => { console.log(JSON.stringify(x, null, 2)); return x };
 const logm = (msg, x) => { console.log(msg, x); return x };
 const methodNames = _.compose(_.keys, _.pickBy(_.is(Function)));
@@ -30,6 +32,100 @@ const smtpConfig = {
 };
 
 
+
+const redisClient = redisConnect(process.env.redis_host, process.env.redis_port)
+const observation = {};
+
+
+
+//       Kick it all off
+co(looper()).catch(function(e){log('oh no, it crashed'); log(e)});;
+
+
+
+function *looper() {
+  while(true) {
+    try {
+      yield checkAll();
+    } catch(err) {
+      log('checkAll caused an error: ' + err);
+    }
+    log('finished checkAll ' + new Date());
+    yield sleep(runFrequency * 60 * 1000);
+  }
+}
+
+function *resqueHealthCheck() {
+  function fn(){ return resqueFailureCount(redisClient) };
+  return yield checkService('resque', fn, v=>+v===0, v=>' has '+v+' errors.')
+}
+
+function *bhHealthCheck() {
+  function fn(){ return request('https://www.summit.com/locations') };
+  function pred(res){ return res && res.statusCode===200 && res.body.match(/Sulphur/)}
+  function err(res){ return 'is down; could not find location. ('+res.statusCode+')'}
+  return yield checkService('bh', fn, pred, err)
+}
+
+function *papiHealthCheck() {
+  var req = {
+    'uri': process.env.papichulo_url,
+    'auth': {
+      'user': process.env.papichulo_username,
+      'pass': process.env.papichulo_password
+    }
+  }
+  log(req);
+  function fn(){ return request.get(req) }
+
+  function pred(res){ logm('res', res.statusCode); return res && res.statusCode===200 && res.body.match(/app_name/)}
+  function err(res){ return 'is down; could not find app_name. ('+res.statusCode+')'}
+  return yield checkService('papi', fn, pred, err)
+}
+
+
+
+//    helper functions
+
+function *checkAll() {
+  var result = {};
+  result.resque = yield resqueHealthCheck();
+  result.bh = yield bhHealthCheck();
+  result.papi = yield papiHealthCheck();
+
+  logm('result: ', result);
+  var errors = getErrors(result);
+  logm('errors: ', errors);
+
+  observation.result = result;
+  observation.errors = errors;
+  observation.date   = new Date();
+
+  if (Object.keys(errors).length > 0) {
+    sendAlert(JSON.stringify(errors)).catch(log);
+  }
+};
+
+
+
+
+function *checkService(serviceName, fn, predicate, errorfn) {
+  var result = {};
+  // result.error = serviceName;  // uncomment to force errors
+  try {
+    var val = yield fn();
+    //logm('val: ',val)
+    if (predicate(val)) {
+      result.msg = serviceName + ' is okay';
+    } else {
+      result.error = serviceName + ' ' + errorfn(val);
+    }
+  } catch(err) {
+    result.error = serviceName + ' has error: ' + err;
+  }
+  return result;
+}
+
 function redisConnect(host, port) {
   port = port || 6379;
   host = host || 'localhost';
@@ -40,95 +136,29 @@ function *resqueFailureCount(client) {
   return yield client.llen('resque:failed');
 }
 
-
-function *checker(serviceName, fn, predicate, errorfn) {
-  var result = {};
-  // result.error = serviceName;  // uncomment to force errors
-  try {
-    var val = yield fn();
-    //logm('val: ',val)
-    if (predicate(val)) {
-      result.msg = serviceName + ' is okay';
-    } else {
-      result.error = serviceName + errorfn(val);
-    }
-  } catch(err) {
-    result.error = serviceName + ' has error: ' + err;
-  }
-  return result;
-}
-
-function *resqueHealthCheck() {
-  function fn(){ return resqueFailureCount(redisClient) };
-  return yield checker('resque', fn, v=>+v===0, v=>' has '+v+' errors.')
-}
-
-function *summitHealthCheck() {
-  function fn(){ return request('https://www.summit.com/locations') };
-  function pred(res){ return res && res.statusCode===200 && res.body.match(/Sulphur/)}
-  function err(res){ return 'summit is down; could not find location. ('+res.statusCode+')'}
-  return yield checker('summit', fn, pred, err)
-}
-
 function sendAlert(msg) {
   return new Promise((resolve, reject) => {
-    var server  = email.server.connect(smtpConfig);
-    server.send({
-      text:    msg,
-      from:    'test@example.com',
-      to:      process.env.alert_emails,
-      subject: "summit alert"
-    }, function(err, message) {
+      var server  = email.server.connect(smtpConfig);
+  server.send({
+    text:    msg,
+    from:    'test@example.com',
+    to:      process.env.alert_emails,
+    subject: "summit alert"
+  }, function(err, message) {
 
-      // should close smtp server, but no such method
-      // will eventually get garbage collected and presumably
-      // close then.
+    // should close smtp server, but no such method
+    // will eventually get garbage collected and presumably
+    // close then.
 
-      if (err)
-        reject(err)
-      else
-        resolve(message);
-    });
+    if (err)
+      reject(err)
+    else
+      resolve(message);
   });
+});
 };
 
-
-
-var errorMsg = _.prop('error')
-var getErrors = _.compose(_.pickBy((val,key)=>val), _.mapObjIndexed(errorMsg))
-
-
-var redisClient = redisConnect(process.env.redis_host, process.env.redis_port)
-
-function *checkAll() {
-  var result = {};
-  result.resque = yield resqueHealthCheck();
-  result.summit = yield summitHealthCheck();
-
-  //logm('result: ', result);
-  var errors = getErrors(result);
-  logm('errors: ', errors);
-
-  if (Object.keys(errors).length > 0) {
-    sendAlert(JSON.stringify(errors)).catch(log);
-  }
-};
-
-co(function *() {
-  while(true) {
-    try {
-      yield checkAll();
-    } catch(err) {
-      log('checkAll caused an error: ' + err);
-    }
-    log('finished checkAll ' + new Date());
-    yield sleep(runFrequency * 60 * 1000);
-  }
-}).catch(function(e){log('oh no, it crashed'); log(e)});
-
-/*
-sendAlert('testing')
-  .then(msg => logm('yay', msg))
-  .catch(msg => logm('boo', msg));
-
-*/
+module.exports = {
+  looper: looper,
+  observation: observation
+}
