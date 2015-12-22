@@ -32,11 +32,17 @@ const smtpConfig = {
 };
 
 
-
-const redisClient = redisConnect(process.env.redis_host, process.env.redis_port)
+const redisClient = redisConnect(process.env.redis_host, process.env.redis_port, process.env.redis_password);
 const observation = {};
 
 
+function run() {
+  co(checker.looper())
+    .catch(e => {
+      log('oh no, it crashed');
+      log(e)
+    });
+}
 
 function *looper() {
   while(true) {
@@ -119,10 +125,11 @@ function *checkService(serviceName, fn, predicate, errorfn) {
   return result;
 }
 
-function redisConnect(host, port) {
+function redisConnect(host, port, pass) {
   port = port || 6379;
   host = host || 'localhost';
-  return redisWrapper(redis.createClient(port, host));
+  pass = pass || null;
+  return redisWrapper(redis.createClient(port, host, {auth_pass: pass}));
 }
 
 function *resqueFailureCount(client) {
@@ -152,6 +159,7 @@ function sendAlert(msg) {
 };
 
 module.exports = {
+  run: run,
   looper: looper,
   checkServices: checkServices,
   observation: observation
